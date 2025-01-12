@@ -22,7 +22,7 @@ def verify_md5(file_path, expected_md5):
         print(f'Рассчитанный хэш "{calculated_md5}"')
         print(f'Ожидаемый хэш "{expected_md5}"')
 
-file_path = 'C:\\Users\\smg3e\\Downloads\\r7-office_2024.4.1.625_x64.exe'
+file_path = 'C:\Downloads\Anaconda3-2021.11-Windows-x86_64.exe'
 expected_md5 = '16933b56706a240e2c9a00983ed00cbb'
 
-verify_md5(file_path,  xpected_md5)
+verify_md5(file_path, expected_md5)
