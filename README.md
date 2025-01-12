@@ -1,3 +1,3 @@
 # MiscProjects
 
-Scratch папка 2
+Scratch папка
