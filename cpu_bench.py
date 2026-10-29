@@ -13,6 +13,7 @@ from pathlib import Path
 import platform
 import random
 import re
+import shutil
 import statistics
 import subprocess
 import sys
@@ -28,6 +29,50 @@ LIST_MAX = 999999999999999999
 LIST_TESTS = ("generate", "sort")
 _barrier = None
 _list_size = DEFAULT_LIST_SIZE
+
+
+class BenchmarkProgress:
+    """One-line progress in progressBarLLM.py style, owned by the parent."""
+
+    def __init__(self, total, stream=None):
+        self.total = total
+        self.completed = 0
+        self.stream = stream if stream is not None else sys.stdout
+        self.started = time.perf_counter()
+        self.detail = "запуск процессов"
+        self.last_width = 0
+        self.full, self.empty = "█", "░"
+        try:
+            (self.full + self.empty).encode(getattr(self.stream, "encoding", None) or "utf-8")
+        except (UnicodeEncodeError, LookupError):
+            self.full, self.empty = "#", "-"
+        self.columns = shutil.get_terminal_size(fallback=(100, 24)).columns
+
+    def render(self):
+        percent = min(100.0, self.completed / self.total * 100)
+        bar_length = min(40, max(10, self.columns - 55))
+        filled = int(bar_length * percent / 100)
+        bar = "[{}{}] {:6.2f}%".format(
+            self.full * filled, self.empty * (bar_length - filled), percent)
+        elapsed = time.perf_counter() - self.started
+        line = "{}  {:6.1f}s  {}".format(bar, elapsed, self.detail)
+        # Reserve the final terminal column to avoid wrapping on a full line.
+        line = line[:max(1, self.columns - 1)]
+        self.stream.write("\r" + line.ljust(self.last_width))
+        self.stream.flush()
+        self.last_width = len(line)
+
+    def show(self, detail):
+        self.detail = detail
+        self.render()
+
+    def advance(self):
+        self.completed += 1
+        self.render()
+
+    def close(self):
+        self.stream.write("\n")
+        self.stream.flush()
 
 
 def pi_integral():
@@ -170,11 +215,21 @@ def run_job(job):
             "cpu_seconds": cpu_seconds, "result": result}
 
 
-def run_sample(pool, name, loops, workers, list_size=DEFAULT_LIST_SIZE):
+def run_sample(pool, name, loops, workers, list_size=DEFAULT_LIST_SIZE, on_wait=None):
     if name in LIST_TESTS and workers != 1:
         raise ValueError("Тесты больших списков поддерживают только один процесс")
     start = time.perf_counter()
-    jobs = pool.map(run_job, [(name, loops)] * workers, chunksize=1)
+    work = [(name, loops)] * workers
+    if on_wait is None:
+        jobs = pool.map(run_job, work, chunksize=1)
+    else:
+        pending = pool.map_async(run_job, work, chunksize=1)
+        while True:
+            try:
+                jobs = pending.get(timeout=0.1)
+                break
+            except mp.TimeoutError:
+                on_wait()
     end_to_end = time.perf_counter() - start
     # Core tests include dispatch overhead; list tests exclude untimed setup,
     # result verification and deallocation, measured in their worker instead.
@@ -187,10 +242,10 @@ def run_sample(pool, name, loops, workers, list_size=DEFAULT_LIST_SIZE):
             "workers": jobs}
 
 
-def calibrate(pool, name, workers, target):
+def calibrate(pool, name, workers, target, on_wait=None):
     loops = 1
     for _ in range(12):
-        sample = run_sample(pool, name, loops, workers)
+        sample = run_sample(pool, name, loops, workers, on_wait=on_wait)
         elapsed = sample["seconds"]
         if elapsed >= target * 0.9:
             return loops
@@ -355,7 +410,9 @@ def metadata(label):
 
 
 def benchmark_mode(context, mode, workers, names, args):
-    print("\n{}: {} процесс(ов). Калибровка и прогрев...".format(mode, workers), flush=True)
+    print("\n{}: {} процесс(ов).".format(mode, workers), flush=True)
+    progress = BenchmarkProgress(len(names) * (1 + args.repeats))
+    progress.render()
     ready = context.Queue()
     barrier = context.Barrier(workers)
     try:
@@ -365,27 +422,28 @@ def benchmark_mode(context, mode, workers, names, args):
                 ready.get(timeout=120)
             settings = {}
             for name in names:
-                loops = 1 if name in LIST_TESTS else calibrate(pool, name, workers, args.seconds)
+                progress.show("прогрев: " + name)
+                loops = 1 if name in LIST_TESTS else calibrate(
+                    pool, name, workers, args.seconds, on_wait=progress.render)
                 for _ in range(args.warmups):
-                    run_sample(pool, name, loops, workers, args.list_size)
+                    run_sample(pool, name, loops, workers, args.list_size, on_wait=progress.render)
                 settings[name] = {"loops_per_worker": loops, "samples": [],
                                   "parameters": {"list_size": args.list_size, "seed": LIST_SEED,
                                                  "max_value": LIST_MAX} if name in LIST_TESTS else {},
                                   "timing_scope": "worker_operation" if name in LIST_TESTS else "pool_wall"}
-                if name in LIST_TESTS:
-                    print("  {}: {:,} чисел, один блок/замер".format(name, args.list_size), flush=True)
-                else:
-                    print("  {}: {} блоков/процесс".format(name, loops), flush=True)
+                progress.advance()
             for repeat in range(args.repeats):
                 offset = repeat % len(names)
                 for name in names[offset:] + names[:offset]:
                     entry = settings[name]
-                    sample = run_sample(pool, name, entry["loops_per_worker"], workers, args.list_size)
+                    progress.show("замер {}/{}: {}".format(repeat + 1, args.repeats, name))
+                    sample = run_sample(pool, name, entry["loops_per_worker"], workers,
+                                        args.list_size, on_wait=progress.render)
                     entry["samples"].append(sample)
-                    print("  {:2d}/{:2d} {:7s}: {:.3f} с | {:,.0f} шагов/с".format(
-                        repeat + 1, args.repeats, name, sample["seconds"],
-                        sample["units_per_second"]), flush=True)
+                    progress.advance()
+            progress.show("готово")
     finally:
+        progress.close()
         ready.close()
         ready.join_thread()
     for name, entry in settings.items():

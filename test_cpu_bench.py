@@ -19,6 +19,42 @@ import cpu_bench as bench
 
 
 class BenchmarkTests(unittest.TestCase):
+    def test_progress_display_and_wait_updates(self):
+        output = io.StringIO()
+        with mock.patch.object(bench.shutil, "get_terminal_size", return_value=os.terminal_size((100, 24))):
+            progress = bench.BenchmarkProgress(2, stream=output)
+            progress.show("прогрев: pi")
+            progress.advance()
+            progress.show("замер 1/1: pi")
+            progress.advance()
+            progress.close()
+        self.assertIn("░", output.getvalue())
+        self.assertIn("█", output.getvalue())
+        self.assertIn("50.00%", output.getvalue())
+        self.assertIn("100.00%", output.getvalue())
+        self.assertTrue(output.getvalue().endswith("\n"))
+
+        class AsciiOutput(io.StringIO):
+            encoding = "ascii"
+
+        ascii_output = AsciiOutput()
+        fallback = bench.BenchmarkProgress(1, stream=ascii_output)
+        fallback.advance()
+        self.assertIn("#", ascii_output.getvalue())
+        self.assertNotIn("█", ascii_output.getvalue())
+
+        pending = mock.Mock()
+        pending.get.side_effect = [bench.mp.TimeoutError(), [
+            {"cpu_seconds": 0.2, "seconds": 0.3, "result": 1, "pid": 123}]]
+        pool = mock.Mock()
+        pool.map_async.return_value = pending
+        on_wait = mock.Mock()
+        sample = bench.run_sample(pool, "pi", 2, 1, on_wait=on_wait)
+        on_wait.assert_called_once_with()
+        self.assertEqual(sample["units"], 20_000)
+        self.assertEqual(sample["workers"][0]["pid"], 123)
+        pool.map.assert_not_called()
+
     def test_memory_detection_and_automatic_limits(self):
         self.assertEqual(bench.parse_linux_memory(
             "MemTotal: 8388608 kB\nMemAvailable: 4194304 kB\nMemFree: 1024 kB\n"),
@@ -154,6 +190,10 @@ class BenchmarkTests(unittest.TestCase):
                        "--label", "smoke", "--output", str(output)]
             completed = subprocess.run(command, capture_output=True, text=True, timeout=60)
             self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            self.assertIn("100.00%", completed.stdout)
+            self.assertNotRegex(completed.stdout, r"\d+/\s*\d+\s+\w+\s*:\s*[\d.]+ с \|")
+            self.assertIn("Итоги:", completed.stdout)
+            self.assertIn("Медиана шаг/с", completed.stdout)
             report = json.loads(output.read_text(encoding="utf-8"))
             for mode, workers in (("single", 1), ("multi", 2)):
                 if mode == "multi":
