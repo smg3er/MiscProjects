@@ -82,7 +82,7 @@ class BenchmarkTests(unittest.TestCase):
                     self.assertEqual(report["settings"]["list_size"], 10_000_000)
                     self.assertTrue(report["settings"]["list_size_auto"])
                     self.assertTrue(report["settings"]["workers_auto"])
-                    self.assertEqual(report["settings"]["repeats"], 10)
+                    self.assertEqual(report["settings"]["repeats"], 5)
                     self.assertEqual(runner.call_args_list[0].args[2], 1)
                     self.assertEqual(runner.call_args_list[1].args[2], 4)
                     self.assertEqual(len(runner.call_args_list[0].args[3]), 6)

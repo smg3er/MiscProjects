@@ -478,7 +478,8 @@ def positive_float(value):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repeats", type=positive_int, default=10)
+    parser.add_argument("--repeats", type=positive_int, default=5,
+                        help="Число измерений каждого теста, по умолчанию 5")
     parser.add_argument("--seconds", type=positive_float, default=1.0,
                         help="Целевая длительность одного замера, по умолчанию 1 с")
     parser.add_argument("--warmups", type=positive_int, default=1)
