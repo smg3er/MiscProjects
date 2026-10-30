@@ -377,11 +377,6 @@ def automatic_workers(cpu_count, memory):
     return min(cpu_count, memory_limit)
 
 
-def default_output(label):
-    stem = re.sub(r"[^\w-]+", "_", label).strip("_")[:100] or "machine"
-    return Path("bench_results") / (stem + ".json")
-
-
 def available_cpus():
     if hasattr(os, "process_cpu_count"):
         return os.process_cpu_count() or 1
@@ -452,8 +447,7 @@ def benchmark_mode(context, mode, workers, names, args):
 
 
 def print_summary(report):
-    headers = ("Тест", "Проц.", "Медиана шаг/с", "Мед., с", "Сред., с",
-               "Мин., с", "Макс., с", "Std, с", "CV, %", "Ускор.")
+    headers = ("Тест", "Проц.", "Медиана шаг/с", "Время, с", "CV, %", "Ускор.")
     rows = []
     single_workloads = report["modes"].get("single", {}).get("workloads", {})
     for mode_name, mode in report["modes"].items():
@@ -464,10 +458,9 @@ def print_summary(report):
                 single = single_workloads[name]["summary"]["median_units_per_second"]
                 speedup = "{:.2f}x".format(s["median_units_per_second"] / single)
             cv = "{:.2f}{}".format(s["cv_percent"], "*" if s["cv_percent"] > 5 else "")
+            duration = "{:.3f}".format(s["median_seconds"]) if name in LIST_TESTS else "-"
             rows.append((name, str(mode["workers"]), "{:,.0f}".format(s["median_units_per_second"]),
-                         "{:.3f}".format(s["median_seconds"]), "{:.3f}".format(s["mean_seconds"]),
-                         "{:.3f}".format(s["min_seconds"]), "{:.3f}".format(s["max_seconds"]),
-                         "{:.4f}".format(s["stdev_seconds"]), cv, speedup))
+                         duration, cv, speedup))
     widths = [max(len(row[index]) for row in [headers] + rows) for index in range(len(headers))]
     border = "+" + "+".join("-" * (width + 2) for width in widths) + "+"
 
@@ -475,7 +468,10 @@ def print_summary(report):
         return "| " + " | ".join(value.ljust(width) if index == 0 else value.rjust(width)
                                   for index, (value, width) in enumerate(zip(row, widths))) + " |"
 
-    print("\nИтоги:")
+    list_size = report.get("settings", {}).get("list_size")
+    list_note = " список {:,} чисел".format(list_size) if list_size and any(
+        row[0] in LIST_TESTS for row in rows) else ""
+    print("\nИтоги:" + list_note)
     print(border)
     print(table_row(headers))
     print(border)
@@ -557,7 +553,7 @@ def main():
     parser.add_argument("--list-size", type=positive_int,
                         help="Чисел в generate/sort; по умолчанию авто по RAM, до 10 000 000; только single")
     parser.add_argument("--label", default="", help="Название машины, например Ryzen7900X")
-    parser.add_argument("--output", type=Path, help="Путь к JSON; по умолчанию bench_results/<процессор>.json, с перезаписью")
+    parser.add_argument("--output", type=Path, help="Дополнительно сохранить JSON по указанному пути, с перезаписью")
     parser.add_argument("--compare", nargs="+", type=Path, help="Сравнить сохранённые JSON без запуска тестов; первый — база")
     args = parser.parse_args()
     if args.compare:
@@ -575,7 +571,6 @@ def main():
     if workers_auto:
         args.workers = automatic_workers(machine["available_cpus"], machine["memory"])
     timestamp = datetime.datetime.now(datetime.timezone.utc)
-    output = args.output or default_output(machine["label"])
     report = {"schema_version": SCHEMA_VERSION, "suite_version": SUITE_VERSION,
               "script_sha256": hashlib.sha256(Path(__file__).read_text(encoding="utf-8").encode("utf-8")).hexdigest(),
               "started_at_utc": timestamp.isoformat(), "machine": machine,
@@ -601,10 +596,11 @@ def main():
             report["modes"][mode] = benchmark_mode(context, mode, workers, selected, args)
     report["finished_at_utc"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
     print_summary(report)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with output.open("w", encoding="utf-8") as stream:
-        json.dump(report, stream, ensure_ascii=False, indent=2, allow_nan=False)
-        stream.write("\n")
+    if args.output is not None:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        with args.output.open("w", encoding="utf-8") as stream:
+            json.dump(report, stream, ensure_ascii=False, indent=2, allow_nan=False)
+            stream.write("\n")
 
 
 if __name__ == "__main__":

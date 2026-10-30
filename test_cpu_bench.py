@@ -98,7 +98,7 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(bench.automatic_workers(24, {"available_bytes": 256 * 1024**2}), 1)
         self.assertEqual(bench.automatic_workers(4, {"available_bytes": None}), 4)
 
-    def test_no_argument_run_autodetects_and_overwrites(self):
+    def test_no_argument_run_autodetects_without_creating_files(self):
         memory = {"total_bytes": 8 * 1024**3, "available_bytes": 4 * 1024**3, "source": "test"}
         original_cwd = Path.cwd()
         with tempfile.TemporaryDirectory() as directory:
@@ -110,10 +110,11 @@ class BenchmarkTests(unittest.TestCase):
                         mock.patch.object(bench, "memory_info", return_value=memory), \
                         mock.patch.object(bench, "benchmark_mode", side_effect=lambda context, mode, workers, names, args:
                                           {"workers": workers, "workloads": {}}) as runner, \
+                        mock.patch.object(bench, "print_summary") as summary_output, \
                         contextlib.redirect_stdout(io.StringIO()):
                     bench.main()
-                    output = Path("bench_results/Example_CPU.json")
-                    report = json.loads(output.read_text(encoding="utf-8"))
+                    self.assertEqual(list(Path(directory).iterdir()), [])
+                    report = summary_output.call_args.args[0]
                     self.assertEqual(report["machine"]["memory"], memory)
                     self.assertEqual(report["settings"]["list_size"], 10_000_000)
                     self.assertTrue(report["settings"]["list_size_auto"])
@@ -123,10 +124,12 @@ class BenchmarkTests(unittest.TestCase):
                     self.assertEqual(runner.call_args_list[1].args[2], 4)
                     self.assertEqual(len(runner.call_args_list[0].args[3]), 6)
                     self.assertEqual(len(runner.call_args_list[1].args[3]), 4)
+                    output = Path("bench_results/previous.json")
+                    output.parent.mkdir()
                     output.write_text("old result", encoding="utf-8")
                     bench.main()
                     self.assertEqual(len(list(Path("bench_results").glob("*.json"))), 1)
-                    self.assertEqual(json.loads(output.read_text())["machine"]["cpu"], "Example CPU")
+                    self.assertEqual(output.read_text(encoding="utf-8"), "old result")
             finally:
                 os.chdir(original_cwd)
 
@@ -213,14 +216,14 @@ class BenchmarkTests(unittest.TestCase):
                     matching_rows = [row for row in table_rows if row[:2] == [name, str(workers)]]
                     self.assertEqual(len(matching_rows), 1)
                     row = matching_rows[0]
-                    self.assertEqual(len(row), 10)
+                    self.assertEqual(len(row), 6)
                     summary = entry["summary"]
-                    self.assertEqual(row[6], "{:.3f}".format(summary["max_seconds"]))
-                    self.assertEqual(row[7], "{:.4f}".format(summary["stdev_seconds"]))
-                    self.assertEqual(row[8].endswith("*"), summary["cv_percent"] > 5)
+                    duration = "{:.3f}".format(summary["median_seconds"]) if name in bench.LIST_TESTS else "-"
+                    self.assertEqual(row[3], duration)
+                    self.assertEqual(row[4].endswith("*"), summary["cv_percent"] > 5)
                     if mode == "multi":
                         base = report["modes"]["single"]["workloads"][name]["summary"]["median_units_per_second"]
-                        self.assertEqual(row[9], "{:.2f}x".format(summary["median_units_per_second"] / base))
+                        self.assertEqual(row[5], "{:.2f}x".format(summary["median_units_per_second"] / base))
                     self.assertEqual(len(entry["samples"]), 2)
                     for sample in entry["samples"]:
                         self.assertEqual(len({w["pid"] for w in sample["workers"]}), workers)
