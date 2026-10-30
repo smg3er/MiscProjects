@@ -452,27 +452,36 @@ def benchmark_mode(context, mode, workers, names, args):
 
 
 def print_summary(report):
-    print("\nИтоги: больше шагов/с — лучше; CV — разброс длительности.")
-    print("{:<8} {:>8} {:>15} {:>10} {:>10} {:>10} {:>7}".format(
-        "Тест", "Проц.", "Медиана шаг/с", "Мед., с", "Сред., с", "Мин., с", "CV, %"))
-    for mode in report["modes"].values():
+    headers = ("Тест", "Проц.", "Медиана шаг/с", "Мед., с", "Сред., с",
+               "Мин., с", "Макс., с", "Std, с", "CV, %", "Ускор.")
+    rows = []
+    single_workloads = report["modes"].get("single", {}).get("workloads", {})
+    for mode_name, mode in report["modes"].items():
         for name, entry in mode["workloads"].items():
             s = entry["summary"]
-            print("{:<8} {:>8} {:>15,.0f} {:>10.3f} {:>10.3f} {:>10.3f} {:>7.2f}".format(
-                name, mode["workers"], s["median_units_per_second"],
-                s["median_seconds"], s["mean_seconds"], s["min_seconds"], s["cv_percent"]))
-            print("         std={:.4f} с; max={:.3f} с; {}".format(
-                s["stdev_seconds"], s["max_seconds"], WORKLOADS[name][2]))
-            if s["cv_percent"] > 5:
-                print("         Заметный разброс (>5%): повторите при меньшей фоновой нагрузке.")
-    if "single" in report["modes"] and "multi" in report["modes"]:
-        print("\nУскорение multi / single по медиане производительности:")
-        for name in report["modes"]["single"]["workloads"]:
-            if name not in report["modes"]["multi"]["workloads"]:
-                continue
-            single = report["modes"]["single"]["workloads"][name]["summary"]["median_units_per_second"]
-            multi = report["modes"]["multi"]["workloads"][name]["summary"]["median_units_per_second"]
-            print("  {}: {:.2f}x".format(name, multi / single))
+            speedup = "-"
+            if mode_name == "multi" and name in single_workloads:
+                single = single_workloads[name]["summary"]["median_units_per_second"]
+                speedup = "{:.2f}x".format(s["median_units_per_second"] / single)
+            cv = "{:.2f}{}".format(s["cv_percent"], "*" if s["cv_percent"] > 5 else "")
+            rows.append((name, str(mode["workers"]), "{:,.0f}".format(s["median_units_per_second"]),
+                         "{:.3f}".format(s["median_seconds"]), "{:.3f}".format(s["mean_seconds"]),
+                         "{:.3f}".format(s["min_seconds"]), "{:.3f}".format(s["max_seconds"]),
+                         "{:.4f}".format(s["stdev_seconds"]), cv, speedup))
+    widths = [max(len(row[index]) for row in [headers] + rows) for index in range(len(headers))]
+    border = "+" + "+".join("-" * (width + 2) for width in widths) + "+"
+
+    def table_row(row):
+        return "| " + " | ".join(value.ljust(width) if index == 0 else value.rjust(width)
+                                  for index, (value, width) in enumerate(zip(row, widths))) + " |"
+
+    print("\nИтоги:")
+    print(border)
+    print(table_row(headers))
+    print(border)
+    for row in rows:
+        print(table_row(row))
+    print(border)
 
 
 def compare(paths):
@@ -583,14 +592,6 @@ def main():
     available_text = "{:.2f} GiB".format(memory["available_bytes"] / 1024**3) if memory["available_bytes"] is not None else "не определена"
     print("RAM: {}; доступно (оценка): {}; логических CPU: {}.".format(
         total_text, available_text, machine["available_cpus"]))
-    print("Отчёт: {} (с перезаписью).".format(output))
-    print("{} замеров; цель {:.2f} с/замер; single=1 процесс, multi={} процессов.".format(
-        args.repeats, args.seconds, args.workers))
-    print("Измеряется производительность Python на этой машине. Шаги разных тестов не складываются.")
-    if any(name in LIST_TESTS for name in names):
-        print("generate/sort: {:,} чисел; только single, подготовка sort вне замера.".format(args.list_size))
-        if args.mode != "single":
-            print("В multi тесты generate/sort пропускаются: большой список не дублируется на каждый CPU.")
     context = mp.get_context("spawn")
     modes = [("single", 1), ("multi", args.workers)] if args.mode == "both" else [
         (args.mode, 1 if args.mode == "single" else args.workers)]
@@ -604,7 +605,6 @@ def main():
     with output.open("w", encoding="utf-8") as stream:
         json.dump(report, stream, ensure_ascii=False, indent=2, allow_nan=False)
         stream.write("\n")
-    print("\nJSON сохранён: {}".format(output.resolve()))
 
 
 if __name__ == "__main__":

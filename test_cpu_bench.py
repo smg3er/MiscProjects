@@ -194,11 +194,33 @@ class BenchmarkTests(unittest.TestCase):
             self.assertNotRegex(completed.stdout, r"\d+/\s*\d+\s+\w+\s*:\s*[\d.]+ с \|")
             self.assertIn("Итоги:", completed.stdout)
             self.assertIn("Медиана шаг/с", completed.stdout)
+            for removed in ("Отчёт:", "замеров; цель", "Измеряется производительность",
+                            "generate/sort:", "В multi тесты", "std=", "max=",
+                            "Ускорение multi / single", "JSON сохранён:"):
+                self.assertNotIn(removed, completed.stdout)
             report = json.loads(output.read_text(encoding="utf-8"))
+            table_rows = []
+            for line in completed.stdout.splitlines():
+                if line.startswith("|"):
+                    cells = [cell.strip() for cell in line.strip("|").split("|")]
+                    if cells[0] in bench.WORKLOADS:
+                        table_rows.append(cells)
+            self.assertEqual(len(table_rows), sum(len(mode["workloads"]) for mode in report["modes"].values()))
             for mode, workers in (("single", 1), ("multi", 2)):
                 if mode == "multi":
                     self.assertTrue(set(bench.LIST_TESTS).isdisjoint(report["modes"][mode]["workloads"]))
                 for name, entry in report["modes"][mode]["workloads"].items():
+                    matching_rows = [row for row in table_rows if row[:2] == [name, str(workers)]]
+                    self.assertEqual(len(matching_rows), 1)
+                    row = matching_rows[0]
+                    self.assertEqual(len(row), 10)
+                    summary = entry["summary"]
+                    self.assertEqual(row[6], "{:.3f}".format(summary["max_seconds"]))
+                    self.assertEqual(row[7], "{:.4f}".format(summary["stdev_seconds"]))
+                    self.assertEqual(row[8].endswith("*"), summary["cv_percent"] > 5)
+                    if mode == "multi":
+                        base = report["modes"]["single"]["workloads"][name]["summary"]["median_units_per_second"]
+                        self.assertEqual(row[9], "{:.2f}x".format(summary["median_units_per_second"] / base))
                     self.assertEqual(len(entry["samples"]), 2)
                     for sample in entry["samples"]:
                         self.assertEqual(len({w["pid"] for w in sample["workers"]}), workers)
